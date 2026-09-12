@@ -14,7 +14,7 @@ import csv
 
 st.set_page_config(page_title="Fiches de transfert", page_icon="🚐", layout="centered")
 
-st.title("🚐 Générateur de fiches de transfert")
+st.title(" Générateur de fiches de transfert")
 st.caption("Desert Evasion — upload le fichier de réservations, choisis une période, récupère un PDF prêt à imprimer.")
 
 uploaded_file = st.file_uploader("Fichier réservations (.xlsx ou .csv)", type=["xlsx", "xls", "csv"])
