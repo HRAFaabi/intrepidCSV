@@ -14,6 +14,31 @@ from transfer_logic import (
 
 st.set_page_config(page_title="Fiches de transfert", page_icon="🚐", layout="wide")
 
+# ------------------------------------------------------------------
+# Flotte — modifie cette liste quand un chauffeur/véhicule change
+# ------------------------------------------------------------------
+FLEET = [
+    ("Khalid", "Ford Tourneo 9 places"),
+    ("Lhoussaine Dades", "Mercedes Vito 9 places"),
+    ("Bilal", "Toyota TX 4 places"),
+    ("Lahcen", "Toyota Prado 4 places"),
+]
+FLEET_LABELS = [f"{driver} — {vehicle}" for driver, vehicle in FLEET]
+LABEL_TO_PAIR = {f"{driver} — {vehicle}": (driver, vehicle) for driver, vehicle in FLEET}
+UNASSIGNED = ""
+
+
+def pair_to_label(driver: str, car: str) -> str:
+    """Reconstitue le label 'Chauffeur — Véhicule' si ça matche la flotte connue."""
+    for d, v in FLEET:
+        if driver.strip() == d and car.strip() == v:
+            return f"{d} — {v}"
+    return UNASSIGNED
+
+
+def label_to_pair(label: str):
+    return LABEL_TO_PAIR.get(label, ("", ""))
+
 st.title("🚐 Générateur de fiches de transfert")
 st.caption(
     "Desert Evasion — upload le fichier de réservations, charge une période, "
@@ -93,20 +118,31 @@ if st.session_state.per_date_rows is not None:
 
     display_cols = [
         "Pickup Date", "Pickup Time", "Transfer Type", "Start", "Destination",
-        "Passengers", "Group Size", "Flight No", "Flight Time", "Driver", "Car", "Txn ID",
+        "Passengers", "Group Size", "Flight No", "Flight Time", "Chauffeur", "Txn ID",
     ]
-    editable_cols = {"Driver", "Car"}
 
     tabs = st.tabs(list(days_with_rows.keys()))
     edited_per_date = {}
 
     for tab, (date_label, rows) in zip(tabs, days_with_rows.items()):
         with tab:
-            df_day = pd.DataFrame(rows)[display_cols]
+            df_day = pd.DataFrame(rows)
+            df_day["Chauffeur"] = df_day.apply(
+                lambda r: pair_to_label(r.get("Driver", ""), r.get("Car", "")), axis=1
+            )
+            df_day = df_day[display_cols]
+
             column_config = {
-                col: st.column_config.TextColumn(disabled=col not in editable_cols)
-                for col in display_cols
+                col: st.column_config.TextColumn(disabled=True)
+                for col in display_cols if col != "Chauffeur"
             }
+            column_config["Chauffeur"] = st.column_config.SelectboxColumn(
+                "Chauffeur / Véhicule",
+                options=[UNASSIGNED] + FLEET_LABELS,
+                required=False,
+                width="medium",
+            )
+
             edited_df = st.data_editor(
                 df_day,
                 key=f"editor_{st.session_state.loaded_key}_{date_label}",
@@ -115,7 +151,13 @@ if st.session_state.per_date_rows is not None:
                 num_rows="fixed",
                 hide_index=True,
             )
-            edited_per_date[date_label] = edited_df.to_dict("records")
+
+            records = edited_df.to_dict("records")
+            for rec in records:
+                driver, car = label_to_pair(rec.pop("Chauffeur", ""))
+                rec["Driver"] = driver
+                rec["Car"] = car
+            edited_per_date[date_label] = records
 
     st.divider()
 
