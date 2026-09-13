@@ -117,8 +117,9 @@ if st.session_state.per_date_rows is not None:
     )
 
     display_cols = [
-        "Pickup Date", "Pickup Time", "Transfer Type", "Start", "Destination",
-        "Passengers", "Group Size", "Flight No", "Flight Time", "Chauffeur", "Txn ID",
+        "Pickup Date", "Pickup Time", "Flight Time", "Transfer Type",
+        "Passengers", "Group Size", "Chauffeur",
+        "Start", "Destination", "Flight No", "Txn ID",
     ]
 
     tabs = st.tabs(list(days_with_rows.keys()))
