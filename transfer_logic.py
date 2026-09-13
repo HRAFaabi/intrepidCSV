@@ -95,6 +95,25 @@ def compute_pickup(flight_dt: datetime, transfer_type: str, destination: str):
     return flight_dt
 
 
+# Mots-clés utilisés pour deviner le type de transfert quand le texte
+# source ne commence pas par "Arrival Transfer -" / "Departure Transfer -".
+AIRPORT_KEYWORDS = ("(RAK)", "(CMN)", "AIRPORT")
+ACCOMMODATION_KEYWORDS = ("RIAD", "HOTEL", "VILLA", "KASBAH", "MAISON")
+
+
+def infer_transfer_type_from_destination(start: str, destination: str) -> str:
+    """Devine Departure/Arrival quand le texte source ne le précise pas
+    explicitement, en se basant uniquement sur la destination (comme
+    compute_pickup le fait déjà pour le décalage horaire).
+    Renvoie "" si aucun mot-clé connu n'est trouvé (reste non classé)."""
+    dest_upper = destination.upper()
+    if any(kw in dest_upper for kw in AIRPORT_KEYWORDS):
+        return "Departure"
+    if any(kw in dest_upper for kw in ACCOMMODATION_KEYWORDS):
+        return "Arrival"
+    return ""
+
+
 # ------------------------------------------------------------------
 # Reading the source file (xlsx or csv) into one combined DataFrame
 # ------------------------------------------------------------------
@@ -137,6 +156,8 @@ def build_transfers_for_date(df: pd.DataFrame, target_date: datetime):
         transfer_type, start_place, destination_place = split_component_name(
             row.get("Component Name") or ""
         )
+        if not transfer_type:
+            transfer_type = infer_transfer_type_from_destination(start_place, destination_place)
 
         time_parts = parse_flight_time(row.get("Flight Time") or "")
         if time_parts is None:
