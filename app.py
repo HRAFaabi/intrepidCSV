@@ -1,7 +1,8 @@
 import io
 import zipfile
-from datetime import timedelta
+from datetime import datetime, timedelta
 
+import pandas as pd
 import streamlit as st
 
 from transfer_logic import (
@@ -10,26 +11,43 @@ from transfer_logic import (
     build_pdf_from_rows,
     CSV_FIELDNAMES,
 )
-import csv
 
-st.set_page_config(page_title="Fiches de transfert", page_icon="🚐", layout="centered")
+st.set_page_config(page_title="Fiches de transfert", page_icon="🚐", layout="wide")
 
-st.title(" Générateur de fiches de transfert")
-st.caption("Desert Evasion — upload le fichier de réservations, choisis une période, récupère un PDF prêt à imprimer.")
+st.title("🚐 Générateur de fiches de transfert")
+st.caption(
+    "Desert Evasion — upload le fichier de réservations, charge une période, "
+    "ajoute les chauffeurs/voitures directement dans le tableau, puis génère le PDF."
+)
 
+# ------------------------------------------------------------------
+# Session state init
+# ------------------------------------------------------------------
+if "per_date_rows" not in st.session_state:
+    st.session_state.per_date_rows = None  # dict[str, list[dict]]
+if "loaded_key" not in st.session_state:
+    st.session_state.loaded_key = None
+
+# ------------------------------------------------------------------
+# Step 1 : upload + période + chargement
+# ------------------------------------------------------------------
 uploaded_file = st.file_uploader("Fichier réservations (.xlsx ou .csv)", type=["xlsx", "xls", "csv"])
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns([1, 1, 2])
 with col1:
     start_date = st.date_input("Date de début")
 with col2:
     end_date = st.date_input("Date de fin")
+with col3:
+    pdf_title = st.text_input("Titre affiché sur le PDF", value="Desert Evasion")
 
-pdf_title = st.text_input("Titre affiché sur le PDF", value="Desert Evasion")
+load_clicked = st.button(
+    "📂 Charger les transferts",
+    type="primary",
+    disabled=uploaded_file is None,
+)
 
-generate = st.button("Générer le PDF", type="primary", disabled=uploaded_file is None)
-
-if generate:
+if load_clicked:
     if start_date > end_date:
         st.error("La date de début doit être avant (ou égale à) la date de fin.")
         st.stop()
@@ -41,60 +59,107 @@ if generate:
             st.error(f"Impossible de lire le fichier : {e}")
             st.stop()
 
-    all_rows = []
     per_date_rows = {}
     d = start_date
     while d <= end_date:
-        target_dt = __import__("datetime").datetime(d.year, d.month, d.day)
+        target_dt = datetime(d.year, d.month, d.day)
         day_rows = build_transfers_for_date(df, target_dt)
         per_date_rows[d.strftime("%d-%b-%y").upper()] = day_rows
-        all_rows.extend(day_rows)
         d += timedelta(days=1)
 
-    total_groups = len(all_rows)
-    total_travelers = sum(r.get("Group Size", 0) for r in all_rows)
-    st.success(
-        f"{total_groups} groupe(s) de transfert trouvé(s) "
-        f"({total_travelers} voyageur(s) au total) sur la période choisie."
-    )
+    st.session_state.per_date_rows = per_date_rows
+    # unique key per (fichier, période) pour repartir à zéro si ça change
+    st.session_state.loaded_key = f"{uploaded_file.name}-{start_date}-{end_date}"
+
+# ------------------------------------------------------------------
+# Step 2 : preview + édition (Driver / Car) + merge + PDF
+# ------------------------------------------------------------------
+if st.session_state.per_date_rows is not None:
+    per_date_rows = st.session_state.per_date_rows
+    days_with_rows = {d: r for d, r in per_date_rows.items() if r}
+
+    total_groups = sum(len(r) for r in days_with_rows.values())
+    total_travelers = sum(sum(row["Group Size"] for row in r) for r in days_with_rows.values())
 
     if total_groups == 0:
         st.warning("Aucun transfert confirmé trouvé sur cette période. Vérifie les dates et le statut des réservations.")
         st.stop()
 
-    # Aperçu par jour
-    for date_label, rows in per_date_rows.items():
-        if rows:
-            with st.expander(f"{date_label} — {len(rows)} transfert(s)"):
-                st.dataframe(rows, use_container_width=True)
-
-    # PDF
-    with st.spinner("Construction du PDF..."):
-        pdf_buffer = build_pdf_from_rows(all_rows, title=pdf_title)
-
-    st.download_button(
-        "⬇️ Télécharger le PDF",
-        data=pdf_buffer,
-        file_name=f"transferts_{start_date.strftime('%d%b%y').upper()}_{end_date.strftime('%d%b%y').upper()}.pdf",
-        mime="application/pdf",
+    st.success(
+        f"{total_groups} groupe(s) de transfert trouvé(s) "
+        f"({total_travelers} voyageur(s) au total) sur la période choisie. "
+        f"Modifie **Driver** et **Car** directement dans les tableaux ci-dessous."
     )
 
-    # Bonus : zip des CSV par jour, si jamais utile pour Driver/Car offline
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for date_label, rows in per_date_rows.items():
-            if not rows:
-                continue
-            csv_buffer = io.StringIO()
-            writer = csv.DictWriter(csv_buffer, fieldnames=CSV_FIELDNAMES)
-            writer.writeheader()
-            writer.writerows(rows)
-            zf.writestr(f"{date_label.replace('-', '')}.csv", csv_buffer.getvalue())
-    zip_buffer.seek(0)
+    display_cols = [
+        "Pickup Date", "Pickup Time", "Transfer Type", "Start", "Destination",
+        "Passengers", "Group Size", "Flight No", "Flight Time", "Driver", "Car", "Txn ID",
+    ]
+    editable_cols = {"Driver", "Car"}
 
-    st.download_button(
-        "⬇️ Télécharger les CSV (un par jour, en zip)",
-        data=zip_buffer,
-        file_name=f"csv_{start_date.strftime('%d%b%y').upper()}_{end_date.strftime('%d%b%y').upper()}.zip",
-        mime="application/zip",
-    )
+    tabs = st.tabs(list(days_with_rows.keys()))
+    edited_per_date = {}
+
+    for tab, (date_label, rows) in zip(tabs, days_with_rows.items()):
+        with tab:
+            df_day = pd.DataFrame(rows)[display_cols]
+            column_config = {
+                col: st.column_config.TextColumn(disabled=col not in editable_cols)
+                for col in display_cols
+            }
+            edited_df = st.data_editor(
+                df_day,
+                key=f"editor_{st.session_state.loaded_key}_{date_label}",
+                column_config=column_config,
+                use_container_width=True,
+                num_rows="fixed",
+                hide_index=True,
+            )
+            edited_per_date[date_label] = edited_df.to_dict("records")
+
+    st.divider()
+
+    gen_col, dl_col = st.columns([1, 3])
+    with gen_col:
+        generate_clicked = st.button("📄 Fusionner et générer le PDF", type="primary")
+
+    if generate_clicked:
+        all_rows = []
+        for rows in edited_per_date.values():
+            all_rows.extend(rows)
+
+        missing = sum(1 for r in all_rows if not (r.get("Driver") or "").strip() or not (r.get("Car") or "").strip())
+        if missing:
+            st.info(f"{missing} transfert(s) sans chauffeur/voiture assigné — ils apparaîtront surlignés dans le PDF.")
+
+        with st.spinner("Construction du PDF..."):
+            pdf_buffer = build_pdf_from_rows(all_rows, title=pdf_title)
+
+        with dl_col:
+            st.download_button(
+                "⬇️ Télécharger le PDF",
+                data=pdf_buffer,
+                file_name=f"transferts_{start_date.strftime('%d%b%y').upper()}_{end_date.strftime('%d%b%y').upper()}.pdf",
+                mime="application/pdf",
+            )
+
+        # Bonus : zip des CSV édités (avec Driver/Car remplis), un par jour
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            for date_label, rows in edited_per_date.items():
+                if not rows:
+                    continue
+                csv_buffer = io.StringIO()
+                import csv as csv_module
+                writer = csv_module.DictWriter(csv_buffer, fieldnames=CSV_FIELDNAMES)
+                writer.writeheader()
+                writer.writerows(rows)
+                zf.writestr(f"{date_label.replace('-', '')}.csv", csv_buffer.getvalue())
+        zip_buffer.seek(0)
+
+        st.download_button(
+            "⬇️ Télécharger les CSV édités (un par jour, en zip)",
+            data=zip_buffer,
+            file_name=f"csv_{start_date.strftime('%d%b%y').upper()}_{end_date.strftime('%d%b%y').upper()}.zip",
+            mime="application/zip",
+        )
