@@ -762,15 +762,16 @@ COLOR_UNASSIGNED = colors.HexColor("#FFF3E0")
 COLOR_GRID = colors.HexColor("#CCCCCC")
 
 COLUMNS = [
-    ("Time", 1.6, "cell_center"),
-    ("Hotel / Riad", 5.4, "cell"),
-    ("Passengers", 6.0, "cell"),
-    ("Grp", 1.0, "cell_center"),
-    ("Flight No", 2.3, "cell_center"),
-    ("Flt Time", 1.6, "cell_center"),
-    ("Driver", 3.4, "cell"),
-    ("Car", 2.6, "cell"),
-    ("Txn ID", 1.9, "cell_center"),
+    ("Time", 1.4, "cell_center"),
+    ("Start", 4.0, "cell"),
+    ("Destination", 4.0, "cell"),
+    ("Passengers", 5.0, "cell"),
+    ("Grp", 0.8, "cell_center"),
+    ("Flight No", 2.0, "cell_center"),
+    ("Flt Time", 1.5, "cell_center"),
+    ("Driver", 3.0, "cell"),
+    ("Car", 2.4, "cell"),
+    ("Txn ID", 1.8, "cell_center"),
 ]
 
 
@@ -804,14 +805,53 @@ def row_transfer_type(row):
     return inferred or "Unknown"
 
 
-def location_cell(row, kind):
-    if kind == "Departure":
-        return _text(row.get("Start")) or "—"
-    if kind == "Arrival":
-        return _text(row.get("Destination")) or "—"
-    start = _text(row.get("Start")) or "—"
-    destination = _text(row.get("Destination")) or "—"
-    return f"{start} → {destination}"
+def city_code_for_location(value: str) -> str:
+    """Return the short city code used in the PDF for Marrakech/Casablanca.
+
+    RAK is shown for Marrakech/Marrakesh locations (hotel or airport).
+    CMN is shown for Casablanca locations (hotel or airport).
+    """
+    text = normalize_text(value)
+    if not text:
+        return ""
+
+    if "(RAK)" in text:
+        return "RAK"
+    if "(CMN)" in text:
+        return "CMN"
+
+    if "MARRAKECH" in text or "MARRAKESH" in text:
+        return "RAK"
+    if "CASABLANCA" in text:
+        return "CMN"
+
+    return ""
+
+
+def location_paragraph(value: str, style, fallback_code: str = ""):
+    """Render a location with a small RAK/CMN hint when relevant."""
+    location = _text(value) or "—"
+    code = city_code_for_location(location) or fallback_code
+
+    # If the source already contains (RAK)/(CMN), remove it from the main
+    # label and render it again using the same small visual hint.
+    display_location = re.sub(
+        r"\s*\((?:RAK|CMN)\)\s*",
+        " ",
+        location,
+        flags=re.IGNORECASE,
+    ).strip()
+    safe_location = html.escape(display_location or "—")
+
+    if code:
+        markup = (
+            f"{safe_location} "
+            f"<font size='6' color='#666666'>({code})</font>"
+        )
+    else:
+        markup = safe_location
+
+    return Paragraph(markup, style)
 
 
 def _safe_paragraph(value, style):
@@ -867,7 +907,8 @@ def build_section_table(rows, kind, styles):
 
         values = [
             _text(row.get("Pickup Time")),
-            location_cell(row, kind),
+            _text(row.get("Start")) or "—",
+            _text(row.get("Destination")) or "—",
             _text(row.get("Passengers")),
             row.get("Group Size", ""),
             _text(row.get("Flight No")) or "—",
@@ -876,10 +917,27 @@ def build_section_table(rows, kind, styles):
             car or "To assign",
             _text(row.get("Txn ID")),
         ]
-        data.append([
-            _safe_paragraph(v, styles[align])
-            for v, (_, _, align) in zip(values, COLUMNS)
-        ])
+
+        # If one endpoint is a known Marrakech/Casablanca airport, use that
+        # code as a fallback for the hotel/riad endpoint when its text does
+        # not explicitly name the city. Explicit city names always win.
+        start_value = values[1]
+        destination_value = values[2]
+        start_airport_code = detect_airport(start_value) or ""
+        destination_airport_code = detect_airport(destination_value) or ""
+
+        start_fallback = destination_airport_code if destination_airport_code in {"RAK", "CMN"} else ""
+        destination_fallback = start_airport_code if start_airport_code in {"RAK", "CMN"} else ""
+
+        rendered = []
+        for col_index, (value, (_, _, align)) in enumerate(zip(values, COLUMNS)):
+            if col_index == 1:
+                rendered.append(location_paragraph(value, styles[align], start_fallback))
+            elif col_index == 2:
+                rendered.append(location_paragraph(value, styles[align], destination_fallback))
+            else:
+                rendered.append(_safe_paragraph(value, styles[align]))
+        data.append(rendered)
 
     table = Table(data, colWidths=col_widths, repeatRows=1)
     if kind == "Departure":
@@ -902,7 +960,8 @@ def build_section_table(rows, kind, styles):
         if i % 2 == 0:
             style_cmds.append(("BACKGROUND", (0, i), (-1, i), COLOR_ROW_ALT))
     for i in unassigned_row_indexes:
-        style_cmds.append(("BACKGROUND", (6, i), (7, i), COLOR_UNASSIGNED))
+        # Driver and Car columns after adding Start + Destination.
+        style_cmds.append(("BACKGROUND", (7, i), (8, i), COLOR_UNASSIGNED))
 
     table.setStyle(TableStyle(style_cmds))
     return table
